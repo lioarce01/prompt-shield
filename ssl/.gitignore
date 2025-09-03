@@ -1,0 +1,11 @@
+# Ignore all SSL certificates and keys for security
+*.pem
+*.key
+*.crt
+*.cert
+*.p12
+*.pfx
+
+# Keep the directory structure
+!README.md
+!.gitignore

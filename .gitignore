@@ -6,6 +6,7 @@
 CLAUDE.md
 
 # API Keys and Secrets (Critical - Never commit)
+env/
 **/.env
 **/.env.local  
 **/.env.*.local

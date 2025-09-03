@@ -1,0 +1,39 @@
+# Git and documentation
+.git/
+.gitignore
+*.md
+README.md
+docs/
+
+# Development files
+.env
+.env.local
+.env.development
+*.log
+*.tmp
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test files
+*_test.go
+test/
+coverage.out
+
+# Build artifacts
+*.exe
+*.so
+*.dylib
+detection-engine
+
+# Docker files (to avoid recursive copying)
+docker/
+Dockerfile*
+docker-compose*.yml
+
+# OS files
+.DS_Store
+Thumbs.db
