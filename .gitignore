@@ -4,6 +4,7 @@
 # Claude Code Assistant Files (Never commit)
 .claude/
 CLAUDE.md
+api-gateway/planning.md
 
 # API Keys and Secrets (Critical - Never commit)
 env/

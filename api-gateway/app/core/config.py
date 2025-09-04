@@ -4,9 +4,9 @@ Configuration management for the API Gateway
 Uses pydantic-settings for environment variable management
 with validation and type conversion.
 """
-from typing import List, Optional
-from pydantic import BaseModel, Field, validator
-from pydantic_settings import BaseSettings
+from typing import List, Optional, Union
+from pydantic import BaseModel, Field, field_validator, ConfigDict
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class DatabaseSettings(BaseModel):
@@ -63,9 +63,20 @@ class Settings(BaseSettings):
     PORT: int = Field(default=8000)
     WORKERS: int = Field(default=1)
     
-    # Security
-    ALLOWED_HOSTS: List[str] = Field(default=["*"])
-    CORS_ORIGINS: List[str] = Field(default=["*"])
+    # Security - Using str type to avoid pydantic-settings JSON parsing
+    ALLOWED_HOSTS: str = Field(default="*")
+    CORS_ORIGINS: str = Field(default="*")
+    
+    # Computed properties for list access
+    @property
+    def allowed_hosts_list(self) -> List[str]:
+        """Get ALLOWED_HOSTS as list"""
+        return self._parse_host_string(self.ALLOWED_HOSTS)
+    
+    @property 
+    def cors_origins_list(self) -> List[str]:
+        """Get CORS_ORIGINS as list"""
+        return self._parse_host_string(self.CORS_ORIGINS)
     
     # Database
     DATABASE_URL: str = Field(default="postgresql://postgres:postgres@localhost:5432/prompt_defense")
@@ -94,14 +105,20 @@ class Settings(BaseSettings):
     CELERY_BROKER_URL: str = Field(default="redis://localhost:6379/1")
     CELERY_RESULT_BACKEND: str = Field(default="redis://localhost:6379/1")
     
-    @validator('ALLOWED_HOSTS', 'CORS_ORIGINS', pre=True)
-    def parse_list_from_string(cls, v):
-        """Parse comma-separated strings into lists"""
-        if isinstance(v, str):
-            return [item.strip() for item in v.split(',') if item.strip()]
-        return v
+    def _parse_host_string(self, value: str) -> List[str]:
+        """Helper method to parse comma or space separated host strings"""
+        if not value or value == "":
+            return ["*"]
+        # Handle both comma-separated and space-separated values
+        items = []
+        for item in value.replace(',', ' ').split():
+            item = item.strip()
+            if item:
+                items.append(item)
+        return items if items else ["*"]
     
-    @validator('SECRET_KEY')
+    @field_validator('SECRET_KEY')
+    @classmethod
     def validate_secret_key(cls, v):
         """Ensure secret key is sufficiently complex"""
         if len(v) < 32:
@@ -140,10 +157,12 @@ class Settings(BaseSettings):
             timeout=self.WEBHOOK_TIMEOUT
         )
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = True
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=True,
+        extra="allow"
+    )
 
 
 # Global settings instance

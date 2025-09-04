@@ -1,4 +1,3 @@
-version: '3.8'
 
 services:
   # Go Detection Engine
@@ -15,7 +14,7 @@ services:
     volumes:
       - ./detection-engine/configs:/app/configs:ro
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "-O", "/dev/null", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -39,8 +38,8 @@ services:
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/prompt_defense
       - REDIS_URL=redis://redis:6379/0
       - DETECTION_ENGINE_URL=http://detection-engine:8080
-      - ALLOWED_HOSTS=localhost,127.0.0.1,api-gateway
       - CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http://localhost:8000
+      - ALLOWED_HOSTS=localhost,127.0.0.1,api.example.com
     depends_on:
       postgres:
         condition: service_healthy
