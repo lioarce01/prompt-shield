@@ -244,6 +244,23 @@ def customize_openapi_schema(app) -> Dict[str, Any]:
     # Add security schemes
     openapi_schema["components"]["securitySchemes"] = get_openapi_security_schemes()
     
+    # Add security requirements to auth endpoints
+    auth_endpoints = [
+        "/auth/profile",
+        "/auth/validate", 
+        "/auth/rotate-key",
+        "/auth/revoke"
+    ]
+    
+    for path, methods in openapi_schema["paths"].items():
+        if path in auth_endpoints:
+            for method, operation in methods.items():
+                if isinstance(operation, dict):
+                    operation["security"] = [
+                        {"APIKeyHeader": []},
+                        {"APIKeyBearer": []}
+                    ]
+    
     # Add common responses
     if "components" not in openapi_schema:
         openapi_schema["components"] = {}

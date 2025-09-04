@@ -16,7 +16,11 @@ from pydantic import BaseModel, Field
 from app.core.config import get_settings
 from app.core.security import generate_api_key, hash_api_key, APIKeyInfo
 from app.utils.validators import validate_api_key_name, validate_rate_limits
-from app.api.dependencies import get_current_api_key
+from app.api.dependencies import get_current_api_key, get_database
+from app.models.auth import APIKey, UsageLog
+from sqlalchemy import select, func
+from sqlalchemy.sql import and_
+import uuid
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -76,20 +80,15 @@ class UsageStats(BaseModel):
     last_used_at: Optional[datetime] = Field(None, description="Last usage")
 
 
-def generate_api_key() -> str:
-    """Generate a secure API key"""
-    # Generate 32 random bytes and encode as hex (64 characters)
-    random_bytes = secrets.token_bytes(32)
-    return f"pid_{random_bytes.hex()}"
 
 
-def hash_api_key(api_key: str) -> str:
-    """Hash an API key for secure storage"""
-    return hashlib.sha256(api_key.encode()).hexdigest()
 
 
 @router.post("/register", response_model=APIKeyResponse)
-async def create_api_key(request: APIKeyRequest) -> APIKeyResponse:
+async def create_api_key(
+    request: APIKeyRequest,
+    db = Depends(get_database)
+) -> APIKeyResponse:
     """
     Create a new API key for accessing detection services
     
@@ -114,14 +113,23 @@ async def create_api_key(request: APIKeyRequest) -> APIKeyResponse:
         rate_limit_per_minute = request.rate_limit_per_minute or settings.DEFAULT_RATE_LIMIT_PER_MINUTE
         rate_limit_per_day = request.rate_limit_per_day or settings.DEFAULT_RATE_LIMIT_PER_DAY
         
-        # TODO: Store in database
-        # For now, return mock response
-        created_at = datetime.utcnow()
+        # Create API key record in database
+        db_api_key = APIKey(
+            key_hash=key_hash,
+            name=request.name,
+            rate_limit_per_minute=rate_limit_per_minute,
+            rate_limit_per_day=rate_limit_per_day
+        )
+        
+        # Save to database
+        db.add(db_api_key)
+        await db.commit()
+        await db.refresh(db_api_key)
         
         # Log API key creation (don't log the actual key!)
         logger.info(
             "API key created",
-            key_id=key_id,
+            key_id=str(db_api_key.id),
             name=request.name,
             rate_limit_per_minute=rate_limit_per_minute,
             rate_limit_per_day=rate_limit_per_day
@@ -129,11 +137,11 @@ async def create_api_key(request: APIKeyRequest) -> APIKeyResponse:
         
         return APIKeyResponse(
             api_key=api_key,
-            key_id=key_id,
+            key_id=str(db_api_key.id),
             name=request.name,
             rate_limit_per_minute=rate_limit_per_minute,
             rate_limit_per_day=rate_limit_per_day,
-            created_at=created_at,
+            created_at=db_api_key.created_at,
             expires_at=None  # No expiration for now
         )
         
@@ -142,10 +150,16 @@ async def create_api_key(request: APIKeyRequest) -> APIKeyResponse:
         raise HTTPException(status_code=500, detail="Failed to create API key")
 
 
-@router.get("/profile", response_model=UsageStats)
+@router.get(
+    "/profile", 
+    response_model=UsageStats,
+    responses={
+        401: {"description": "Unauthorized - API key required"}
+    }
+)
 async def get_api_key_profile(
-    # TODO: Add API key authentication dependency
-    # api_key_info = Depends(authenticate_api_key)
+    api_key_info: APIKeyInfo = Depends(get_current_api_key),
+    db = Depends(get_database)
 ) -> UsageStats:
     """
     Get usage statistics and profile for your API key
@@ -154,23 +168,68 @@ async def get_api_key_profile(
     rate limits, and activity history for the authenticated API key.
     """
     try:
-        # TODO: Get actual API key from authentication
-        # For now, return mock data
+        logger.info("Profile requested", key_id=api_key_info.key_id)
         
-        mock_key_id = "mock_key_123"
+        # Get current time boundaries
+        now = datetime.utcnow()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        minute_start = now.replace(second=0, microsecond=0)
         
-        logger.info("Profile requested", key_id=mock_key_id)
+        # Query usage statistics
+        api_key_uuid = uuid.UUID(api_key_info.key_id)
+        
+        # Total requests
+        total_stmt = select(func.count(UsageLog.id)).where(
+            UsageLog.api_key_id == api_key_uuid
+        )
+        total_result = await db.execute(total_stmt)
+        total_requests = total_result.scalar() or 0
+        
+        # Requests today
+        today_stmt = select(func.count(UsageLog.id)).where(
+            and_(
+                UsageLog.api_key_id == api_key_uuid,
+                UsageLog.created_at >= today_start
+            )
+        )
+        today_result = await db.execute(today_stmt)
+        requests_today = today_result.scalar() or 0
+        
+        # Requests this minute
+        minute_stmt = select(func.count(UsageLog.id)).where(
+            and_(
+                UsageLog.api_key_id == api_key_uuid,
+                UsageLog.created_at >= minute_start
+            )
+        )
+        minute_result = await db.execute(minute_stmt)
+        requests_this_minute = minute_result.scalar() or 0
+        
+        # Malicious detections
+        malicious_stmt = select(func.count(UsageLog.id)).where(
+            and_(
+                UsageLog.api_key_id == api_key_uuid,
+                UsageLog.is_malicious == True
+            )
+        )
+        malicious_result = await db.execute(malicious_stmt)
+        malicious_detections = malicious_result.scalar() or 0
+        
+        # Get API key details for last_used_at
+        api_key_stmt = select(APIKey).where(APIKey.id == api_key_uuid)
+        api_key_result = await db.execute(api_key_stmt)
+        db_api_key = api_key_result.scalar_one()
         
         return UsageStats(
-            key_id=mock_key_id,
-            name="Development Key",
-            requests_today=42,
-            requests_this_minute=2,
-            rate_limit_per_minute=60,
-            rate_limit_per_day=10000,
-            total_requests=1337,
-            malicious_detections=15,
-            last_used_at=datetime.utcnow() - timedelta(minutes=5)
+            key_id=api_key_info.key_id,
+            name=api_key_info.name,
+            requests_today=requests_today,
+            requests_this_minute=requests_this_minute,
+            rate_limit_per_minute=api_key_info.rate_limit_per_minute,
+            rate_limit_per_day=api_key_info.rate_limit_per_day,
+            total_requests=total_requests,
+            malicious_detections=malicious_detections,
+            last_used_at=db_api_key.last_used_at or db_api_key.created_at
         )
         
     except Exception as e:
@@ -178,10 +237,15 @@ async def get_api_key_profile(
         raise HTTPException(status_code=500, detail="Failed to get profile")
 
 
-@router.post("/rotate-key", response_model=APIKeyResponse)
+@router.post(
+    "/rotate-key", 
+    response_model=APIKeyResponse,
+    responses={
+        401: {"description": "Unauthorized - API key required"}
+    }
+)
 async def rotate_api_key(
-    # TODO: Add API key authentication dependency
-    # api_key_info = Depends(authenticate_api_key)
+    api_key_info: APIKeyInfo = Depends(get_current_api_key)
 ) -> APIKeyResponse:
     """
     Rotate your API key to a new value
@@ -213,10 +277,14 @@ async def rotate_api_key(
         raise HTTPException(status_code=500, detail="Failed to rotate API key")
 
 
-@router.delete("/revoke")
+@router.delete(
+    "/revoke",
+    responses={
+        401: {"description": "Unauthorized - API key required"}
+    }
+)
 async def revoke_api_key(
-    # TODO: Add API key authentication dependency
-    # api_key_info = Depends(authenticate_api_key)
+    api_key_info: APIKeyInfo = Depends(get_current_api_key)
 ) -> Dict[str, str]:
     """
     Revoke your API key permanently
@@ -241,10 +309,14 @@ async def revoke_api_key(
         raise HTTPException(status_code=500, detail="Failed to revoke API key")
 
 
-@router.get("/validate")
+@router.get(
+    "/validate",
+    responses={
+        401: {"description": "Unauthorized - API key required"}
+    }
+)
 async def validate_api_key(
-    # TODO: Add API key authentication dependency  
-    # api_key_info = Depends(authenticate_api_key)
+    api_key_info: APIKeyInfo = Depends(get_current_api_key)
 ) -> Dict[str, Any]:
     """
     Validate your API key and check current status
@@ -258,8 +330,8 @@ async def validate_api_key(
         
         return {
             "valid": True,
-            "key_id": "mock_key_123",
-            "name": "Development Key",
+            "key_id": api_key_info.key_id,
+            "name": api_key_info.name,
             "is_active": True,
             "rate_limits": {
                 "per_minute": 60,

@@ -14,8 +14,11 @@ from functools import wraps
 import structlog
 from fastapi import HTTPException, Request, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy import select
 
 from app.core.config import get_settings
+from app.core.database import get_db_session
+from app.models.auth import APIKey
 
 logger = structlog.get_logger()
 security = HTTPBearer(auto_error=False)
@@ -144,30 +147,53 @@ async def authenticate_api_key(
             }
         )
     
-    # TODO: Look up API key in database
-    # For now, return mock data for development
-    
-    # Hash the provided key to simulate database lookup
+    # Look up API key in database
     key_hash = hash_api_key(api_key)
     
-    # Mock API key validation
-    mock_api_key = APIKeyInfo(
-        key_id="mock_key_123",
-        name="Development Key",
-        rate_limit_per_minute=60,
-        rate_limit_per_day=10000,
-        is_active=True
-    )
-    
-    # Log successful authentication (don't log the actual key!)
-    logger.info(
-        "API key authenticated",
-        key_id=mock_api_key.key_id,
-        name=mock_api_key.name,
-        client_ip=request.client.host if request.client else None
-    )
-    
-    return mock_api_key
+    async with get_db_session() as db:
+        # Query database for API key
+        stmt = select(APIKey).where(
+            APIKey.key_hash == key_hash,
+            APIKey.is_active == True
+        )
+        result = await db.execute(stmt)
+        db_api_key = result.scalar_one_or_none()
+        
+        if not db_api_key:
+            logger.warning(
+                "Invalid API key attempt", 
+                client_ip=request.client.host if request.client else None
+            )
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": "Invalid API key",
+                    "message": "API key not found or inactive"
+                }
+            )
+        
+        # Update last used timestamp
+        db_api_key.last_used_at = datetime.utcnow()
+        await db.commit()
+        
+        # Create APIKeyInfo object
+        api_key_info = APIKeyInfo(
+            key_id=str(db_api_key.id),
+            name=db_api_key.name,
+            rate_limit_per_minute=db_api_key.rate_limit_per_minute,
+            rate_limit_per_day=db_api_key.rate_limit_per_day,
+            is_active=db_api_key.is_active
+        )
+        
+        # Log successful authentication (don't log the actual key!)
+        logger.info(
+            "API key authenticated",
+            key_id=api_key_info.key_id,
+            name=api_key_info.name,
+            client_ip=request.client.host if request.client else None
+        )
+        
+        return api_key_info
 
 
 async def authenticate_admin_key(

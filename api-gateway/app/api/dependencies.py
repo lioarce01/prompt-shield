@@ -22,7 +22,7 @@ async def get_admin_api_key(request: Request) -> APIKeyInfo:
     return await authenticate_admin_key(api_key)
 
 
-async def get_database() -> AsyncSession:
+async def get_database():
     """Get database session"""
-    async with get_db() as session:
+    async for session in get_db():
         yield session
