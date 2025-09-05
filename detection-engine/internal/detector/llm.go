@@ -664,3 +664,110 @@ func (l *LLMDetector) isPrintableText(text string) bool {
 	}
 	return float64(printableCount)/float64(len(text)) > 0.8
 }
+
+// detectWithSpecificEndpoint performs detection using a specific model configuration
+// This method is used by the circuit breaker fallback system
+func (l *LLMDetector) detectWithSpecificEndpoint(text string, model ModelConfig) (*DetectionResult, error) {
+	startTime := time.Now()
+
+	result := &DetectionResult{
+		Method:      MethodLLM,
+		Score:       0.5, // Default uncertain score
+		ThreatTypes: make([]ThreatType, 0),
+		Reason:      fmt.Sprintf("Analyzing with %s...", model.Name),
+	}
+
+	// Preprocess encoding attacks
+	decodedTexts := l.preprocessEncodingAttacks(text)
+	
+	// Test original text plus any decoded variants
+	testTexts := []string{text}
+	testTexts = append(testTexts, decodedTexts...)
+
+	// Create endpoint from model config
+	endpoint := LLMEndpoint{
+		URL:     model.URL,
+		Type:    string(model.Type),
+		Model:   model.Model,
+		APIKey:  getAPIKeyForProvider(model.Provider, model.APIKeyEnvVar),
+		Timeout: model.Timeout,
+	}
+
+	// Adjust endpoint type for compatibility
+	switch model.Provider {
+	case ProviderHuggingFace:
+		endpoint.Type = "huggingface_classification"
+	case ProviderGoogle:
+		endpoint.Type = "gemini"
+	}
+
+	// Try detection with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), model.Timeout)
+	defer cancel()
+
+	var lastError error
+	bestScore := 0.0
+
+	// Test all text variants with this specific endpoint
+	for _, testText := range testTexts {
+		select {
+		case <-ctx.Done():
+			result.Duration = time.Since(startTime)
+			return result, fmt.Errorf("detection timeout for model %s", model.Name)
+		default:
+			if analysis, err := l.callEndpoint(ctx, endpoint, testText); err == nil {
+				// Successfully got response, parse it
+				score, threatTypes, reason := l.parseAnalysis(analysis)
+
+				// Keep the best result from all variants
+				if score > bestScore {
+					bestScore = score
+					result.Score = score
+					result.ThreatTypes = threatTypes
+					result.Reason = reason
+				}
+				
+				// If this variant shows high threat confidence, return immediately
+				if score >= 0.8 {
+					result.Duration = time.Since(startTime)
+					return result, nil
+				}
+			} else {
+				lastError = err
+			}
+		}
+	}
+
+	// If we got any successful response, return best result
+	if bestScore > 0 || len(result.ThreatTypes) > 0 {
+		result.Duration = time.Since(startTime)
+		return result, nil
+	}
+
+	// No successful responses
+	result.Reason = fmt.Sprintf("Model %s failed: %v", model.Name, lastError)
+	result.Duration = time.Since(startTime)
+
+	return result, fmt.Errorf("model %s failed: %v", model.Name, lastError)
+}
+
+// getAPIKeyForProvider retrieves API key for a specific provider
+func getAPIKeyForProvider(provider ModelProvider, envVar string) string {
+	if envVar != "" {
+		return os.Getenv(envVar)
+	}
+
+	// Fallback to provider-specific environment variables
+	switch provider {
+	case ProviderHuggingFace:
+		return getHuggingFaceAPIKey()
+	case ProviderGoogle:
+		return getGeminiAPIKey()
+	case ProviderOpenAI:
+		return os.Getenv("OPENAI_API_KEY")
+	case ProviderAnthropic:
+		return os.Getenv("ANTHROPIC_API_KEY")
+	default:
+		return ""
+	}
+}

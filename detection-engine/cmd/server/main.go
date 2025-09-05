@@ -29,11 +29,11 @@ func main() {
 		log.WithError(err).Fatal("Failed to load configuration")
 	}
 
-	// Initialize detection pipeline
-	detectionPipeline := detector.NewPipeline(log)
+	// Initialize detection pipeline with circuit breaker fallback
+	detectionPipeline := detector.NewFallbackPipeline(log)
 
-	// Initialize HTTP handlers
-	handlers := handler.NewDetectionHandler(detectionPipeline, log)
+	// Initialize HTTP handlers with fallback support
+	handlers := handler.NewFallbackDetectionHandler(detectionPipeline, log)
 
 	// Setup Gin router
 	gin.SetMode(gin.ReleaseMode)
@@ -53,6 +53,8 @@ func main() {
 		v1.POST("/detect", handlers.DetectInjection)
 		v1.GET("/metrics", handlers.GetMetrics)
 		v1.GET("/diagnose-llm", handlers.DiagnoseLLM)
+		v1.GET("/circuit-breakers", handlers.GetCircuitBreakers)
+		v1.POST("/circuit-breakers/:model/reset", handlers.ResetCircuitBreaker)
 	}
 
 	// Create HTTP server

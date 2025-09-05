@@ -5,6 +5,7 @@
 .claude/
 CLAUDE.md
 api-gateway/planning.md
+ENHANCEMENTS.md
 
 # API Keys and Secrets (Critical - Never commit)
 env/

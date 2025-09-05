@@ -52,13 +52,18 @@ type DetectionResult struct {
 	Duration    time.Duration   `json:"duration"`
 }
 
-// HealthStatus represents the health status of the detection engine (LLM-only)
+// HealthStatus represents the health status of the detection engine with circuit breakers
 type HealthStatus struct {
-	Status           string        `json:"status"`
-	Version          string        `json:"version"`
-	Uptime           time.Duration `json:"uptime"`
-	RequestsServed   int64         `json:"requests_served"`
-	AverageLatency   time.Duration `json:"average_latency_ms"`
-	LLMEndpoints     []string      `json:"llm_endpoints"`
-	APIKeyConfigured bool          `json:"api_key_configured"`
+	Status           string                          `json:"status"`
+	Version          string                          `json:"version"`
+	Uptime           time.Duration                   `json:"uptime"`
+	RequestsServed   int64                          `json:"requests_served"`
+	AverageLatency   time.Duration                   `json:"average_latency_ms"`
+	ModelsAvailable  int                            `json:"models_available"`
+	TotalModels      int                            `json:"total_models"`
+	CircuitBreakers  map[string]CircuitBreakerStats `json:"circuit_breakers,omitempty"`
+	APIKeyConfigured bool                           `json:"api_key_configured"`
+	
+	// Legacy fields for backward compatibility
+	LLMEndpoints     []string      `json:"llm_endpoints,omitempty"`
 }
