@@ -84,6 +84,10 @@ class Settings(BaseSettings):
     
     # Redis
     REDIS_URL: str = Field(default="redis://localhost:6379/0")
+    REDIS_HOST: str = Field(default="localhost")
+    REDIS_PORT: int = Field(default=6379)
+    REDIS_DB_RATE_LIMIT: int = Field(default=0)  # Database for rate limiting
+    REDIS_DB_CACHE: int = Field(default=1)       # Database for caching
     
     # Security
     SECRET_KEY: str = Field(..., description="Secret key for JWT signing")

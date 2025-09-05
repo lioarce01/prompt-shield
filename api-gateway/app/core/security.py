@@ -283,71 +283,8 @@ def create_webhook_signature(payload: bytes, secret: str) -> str:
     return f"sha256={signature}"
 
 
-# Rate limiting utilities (Redis-based implementation would go here)
-class RateLimitExceeded(HTTPException):
-    """Custom exception for rate limit exceeded"""
-    def __init__(self, detail: str, retry_after: Optional[int] = None):
-        super().__init__(status_code=429, detail=detail)
-        self.retry_after = retry_after
-
-
-async def check_rate_limit(
-    api_key_info: APIKeyInfo,
-    request: Request
-) -> None:
-    """
-    Check if API key has exceeded rate limits
-    
-    Args:
-        api_key_info: API key information
-        request: FastAPI request object
-        
-    Raises:
-        RateLimitExceeded: If rate limit is exceeded
-    """
-    # TODO: Implement Redis-based rate limiting
-    # For now, always pass in development
-    
-    # Mock rate limiting logic
-    current_minute = datetime.utcnow().replace(second=0, microsecond=0)
-    current_day = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    
-    # In production, these would be Redis counters
-    minute_count = 0  # Redis GET minute_key
-    daily_count = 0   # Redis GET daily_key
-    
-    # Check per-minute limit
-    if minute_count >= api_key_info.rate_limit_per_minute:
-        logger.warning(
-            "Rate limit exceeded - per minute",
-            key_id=api_key_info.key_id,
-            limit=api_key_info.rate_limit_per_minute,
-            current=minute_count
-        )
-        raise RateLimitExceeded(
-            detail=f"Rate limit exceeded: {api_key_info.rate_limit_per_minute} requests per minute",
-            retry_after=60
-        )
-    
-    # Check per-day limit
-    if daily_count >= api_key_info.rate_limit_per_day:
-        logger.warning(
-            "Rate limit exceeded - per day",
-            key_id=api_key_info.key_id,
-            limit=api_key_info.rate_limit_per_day,
-            current=daily_count
-        )
-        raise RateLimitExceeded(
-            detail=f"Rate limit exceeded: {api_key_info.rate_limit_per_day} requests per day",
-            retry_after=86400  # 24 hours
-        )
-    
-    # TODO: Increment counters in Redis
-    # Redis INCR minute_key, EXPIRE minute_key 60
-    # Redis INCR daily_key, EXPIRE daily_key 86400
-    
-    # Add rate limit headers to response would be done in middleware
-    pass
+# Rate limiting is now handled by RateLimitMiddleware
+# This file focuses on authentication only
 
 
 def require_api_key(func):

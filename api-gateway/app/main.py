@@ -22,6 +22,7 @@ from app.core.config import get_settings
 from app.core.database import init_db
 from app.core.openapi import customize_openapi_schema, get_openapi_tags
 from app.services.detection_client import DetectionClient
+from app.middleware.rate_limiter import RateLimitMiddleware, get_redis_client
 # Import models so SQLAlchemy can create tables
 from app.models import auth as auth_models
 
@@ -65,6 +66,14 @@ async def lifespan(app: FastAPI):
     detection_client = DetectionClient(settings.DETECTION_ENGINE_URL)
     app.state.detection_client = detection_client
     
+    # Initialize Redis client for rate limiting
+    try:
+        redis_client = await get_redis_client()
+        app.state.redis_client = redis_client
+        logger.info("Redis connected for rate limiting")
+    except Exception as e:
+        logger.error("Failed to connect to Redis", error=str(e))
+    
     # Test connection to Go detection engine
     try:
         health = await detection_client.health_check()
@@ -78,6 +87,8 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down API Gateway")
     if hasattr(app.state, 'detection_client'):
         await app.state.detection_client.close()
+    if hasattr(app.state, 'redis_client'):
+        await app.state.redis_client.close()
 
 
 # Create FastAPI app
@@ -111,6 +122,88 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Rate limiting middleware
+@app.middleware("http")
+async def rate_limiting_middleware(request: Request, call_next):
+    """Rate limiting middleware using Redis"""
+    from app.middleware.rate_limiter import RedisRateLimiter
+    from app.core.security import extract_api_key_from_request, hash_api_key
+    from app.models.auth import APIKey
+    from sqlalchemy import select
+    from app.core.database import get_db_session
+    
+    # Check if this path needs rate limiting
+    rate_limited_paths = {"/v1/detect", "/v1/detect/batch", "/v1/detect/async"}
+    exempt_paths = {"/health", "/docs", "/openapi.json", "/auth/register"}
+    
+    should_rate_limit = (
+        any(request.url.path.startswith(path) for path in rate_limited_paths) and
+        not any(request.url.path.startswith(path) for path in exempt_paths)
+    )
+    
+    if not should_rate_limit or not hasattr(app.state, 'redis_client'):
+        return await call_next(request)
+    
+    # Extract API key and get limits
+    api_key = extract_api_key_from_request(request)
+    if not api_key:
+        return await call_next(request)
+    
+    try:
+        key_hash = hash_api_key(api_key)
+        async with get_db_session() as db:
+            stmt = select(APIKey).where(
+                APIKey.key_hash == key_hash,
+                APIKey.is_active == True
+            )
+            result = await db.execute(stmt)
+            db_api_key = result.scalar_one_or_none()
+            
+            if not db_api_key:
+                return await call_next(request)
+            
+            api_key_id = str(db_api_key.id)
+            minute_limit = db_api_key.rate_limit_per_minute
+            day_limit = db_api_key.rate_limit_per_day
+            
+    except Exception as e:
+        logger.error("Error checking API key for rate limiting", error=str(e))
+        return await call_next(request)
+    
+    # Check rate limits
+    rate_limiter = RedisRateLimiter(app.state.redis_client)
+    is_allowed, rate_limit_error = await rate_limiter.check_rate_limit(
+        api_key_id, minute_limit, day_limit
+    )
+    
+    if not is_allowed:
+        # Return rate limit exceeded error
+        from fastapi.responses import JSONResponse
+        response = JSONResponse(
+            content=rate_limit_error.detail,
+            status_code=429
+        )
+        response.headers["Retry-After"] = str(rate_limit_error.retry_after)
+        response.headers["X-RateLimit-Limit-Minute"] = str(minute_limit)
+        response.headers["X-RateLimit-Limit-Day"] = str(day_limit)
+        response.headers["X-RateLimit-Reset"] = str(rate_limit_error.reset_time)
+        return response
+    
+    # Process request
+    response = await call_next(request)
+    
+    # Add rate limit headers to successful response
+    try:
+        usage = await rate_limiter.get_current_usage(api_key_id)
+        response.headers["X-RateLimit-Limit-Minute"] = str(minute_limit)
+        response.headers["X-RateLimit-Remaining-Minute"] = str(max(0, minute_limit - usage["requests_this_minute"]))
+        response.headers["X-RateLimit-Limit-Day"] = str(day_limit)
+        response.headers["X-RateLimit-Remaining-Day"] = str(max(0, day_limit - usage["requests_today"]))
+    except Exception as e:
+        logger.error("Error adding rate limit headers", error=str(e))
+    
+    return response
 
 
 @app.middleware("http")
