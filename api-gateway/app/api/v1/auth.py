@@ -245,7 +245,8 @@ async def get_api_key_profile(
     }
 )
 async def rotate_api_key(
-    api_key_info: APIKeyInfo = Depends(get_current_api_key)
+    api_key_info: APIKeyInfo = Depends(get_current_api_key),
+    db = Depends(get_database)
 ) -> APIKeyResponse:
     """
     Rotate your API key to a new value
@@ -254,26 +255,42 @@ async def rotate_api_key(
     the same configuration and usage history. The old key is immediately invalidated.
     """
     try:
-        # TODO: Get current API key info from authentication
-        # For now, return mock response
+        # Get current API key from database
+        api_key_uuid = uuid.UUID(api_key_info.key_id)
+        api_key_stmt = select(APIKey).where(APIKey.id == api_key_uuid)
+        api_key_result = await db.execute(api_key_stmt)
+        db_api_key = api_key_result.scalar_one_or_none()
         
+        if not db_api_key:
+            logger.error("API key not found for rotation", key_id=api_key_info.key_id)
+            raise HTTPException(status_code=404, detail="API key not found")
+        
+        # Generate new API key
         new_api_key = generate_api_key()
-        key_id = "mock_key_123"
+        new_key_hash = hash_api_key(new_api_key)
         
-        logger.info("API key rotated", key_id=key_id)
+        # Update the existing API key with new hash
+        db_api_key.key_hash = new_key_hash
+        db_api_key.created_at = datetime.utcnow()  # Update creation time for the new key
+        
+        # Save changes to database
+        await db.commit()
+        await db.refresh(db_api_key)
+        
+        logger.info("API key rotated", key_id=api_key_info.key_id, name=db_api_key.name)
         
         return APIKeyResponse(
             api_key=new_api_key,
-            key_id=key_id,
-            name="Development Key",
-            rate_limit_per_minute=60,
-            rate_limit_per_day=10000,
-            created_at=datetime.utcnow(),
+            key_id=str(db_api_key.id),
+            name=db_api_key.name,
+            rate_limit_per_minute=db_api_key.rate_limit_per_minute,
+            rate_limit_per_day=db_api_key.rate_limit_per_day,
+            created_at=db_api_key.created_at,
             expires_at=None
         )
         
     except Exception as e:
-        logger.error("Failed to rotate API key", error=str(e))
+        logger.error("Failed to rotate API key", error=str(e), key_id=api_key_info.key_id)
         raise HTTPException(status_code=500, detail="Failed to rotate API key")
 
 
@@ -284,7 +301,8 @@ async def rotate_api_key(
     }
 )
 async def revoke_api_key(
-    api_key_info: APIKeyInfo = Depends(get_current_api_key)
+    api_key_info: APIKeyInfo = Depends(get_current_api_key),
+    db = Depends(get_database)
 ) -> Dict[str, str]:
     """
     Revoke your API key permanently
@@ -293,19 +311,43 @@ async def revoke_api_key(
     This action cannot be undone. You'll need to create a new key to continue using the service.
     """
     try:
-        # TODO: Get current API key info from authentication and revoke it
-        key_id = "mock_key_123"
+        # Get current API key from database
+        api_key_uuid = uuid.UUID(api_key_info.key_id)
+        api_key_stmt = select(APIKey).where(APIKey.id == api_key_uuid)
+        api_key_result = await db.execute(api_key_stmt)
+        db_api_key = api_key_result.scalar_one_or_none()
         
-        logger.info("API key revoked", key_id=key_id)
+        if not db_api_key:
+            logger.error("API key not found for revocation", key_id=api_key_info.key_id)
+            raise HTTPException(status_code=404, detail="API key not found")
+        
+        # Check if already inactive
+        if not db_api_key.is_active:
+            logger.warning("Attempted to revoke already inactive key", key_id=api_key_info.key_id)
+            return {
+                "message": "API key is already revoked",
+                "key_id": api_key_info.key_id,
+                "revoked_at": db_api_key.last_used_at.isoformat() if db_api_key.last_used_at else db_api_key.created_at.isoformat()
+            }
+        
+        # Revoke the API key by setting is_active to False
+        db_api_key.is_active = False
+        revoked_at = datetime.utcnow()
+        db_api_key.last_used_at = revoked_at  # Mark revocation time
+        
+        # Save changes to database
+        await db.commit()
+        
+        logger.info("API key revoked", key_id=api_key_info.key_id, name=db_api_key.name)
         
         return {
             "message": "API key revoked successfully",
-            "key_id": key_id,
-            "revoked_at": datetime.utcnow().isoformat()
+            "key_id": api_key_info.key_id,
+            "revoked_at": revoked_at.isoformat()
         }
         
     except Exception as e:
-        logger.error("Failed to revoke API key", error=str(e))
+        logger.error("Failed to revoke API key", error=str(e), key_id=api_key_info.key_id)
         raise HTTPException(status_code=500, detail="Failed to revoke API key")
 
 
@@ -316,7 +358,8 @@ async def revoke_api_key(
     }
 )
 async def validate_api_key(
-    api_key_info: APIKeyInfo = Depends(get_current_api_key)
+    api_key_info: APIKeyInfo = Depends(get_current_api_key),
+    db = Depends(get_database)
 ) -> Dict[str, Any]:
     """
     Validate your API key and check current status
@@ -325,23 +368,60 @@ async def validate_api_key(
     and get current rate limiting status.
     """
     try:
-        # TODO: Get actual API key info from authentication
-        # For now, return mock validation
+        # Get current time boundaries for usage calculation
+        now = datetime.utcnow()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        minute_start = now.replace(second=0, microsecond=0)
+        
+        # Get API key details from database
+        api_key_uuid = uuid.UUID(api_key_info.key_id)
+        api_key_stmt = select(APIKey).where(APIKey.id == api_key_uuid)
+        api_key_result = await db.execute(api_key_stmt)
+        db_api_key = api_key_result.scalar_one_or_none()
+        
+        if not db_api_key:
+            logger.error("API key not found for validation", key_id=api_key_info.key_id)
+            raise HTTPException(status_code=404, detail="API key not found")
+        
+        # Query current usage statistics (similar to profile endpoint)
+        # Requests today
+        today_stmt = select(func.count(UsageLog.id)).where(
+            and_(
+                UsageLog.api_key_id == api_key_uuid,
+                UsageLog.created_at >= today_start
+            )
+        )
+        today_result = await db.execute(today_stmt)
+        requests_today = today_result.scalar() or 0
+        
+        # Requests this minute
+        minute_stmt = select(func.count(UsageLog.id)).where(
+            and_(
+                UsageLog.api_key_id == api_key_uuid,
+                UsageLog.created_at >= minute_start
+            )
+        )
+        minute_result = await db.execute(minute_stmt)
+        requests_this_minute = minute_result.scalar() or 0
+        
+        logger.info("API key validated", key_id=api_key_info.key_id, is_active=db_api_key.is_active)
         
         return {
             "valid": True,
             "key_id": api_key_info.key_id,
-            "name": api_key_info.name,
-            "is_active": True,
+            "name": db_api_key.name,
+            "is_active": db_api_key.is_active,
             "rate_limits": {
-                "per_minute": 60,
-                "per_day": 10000,
-                "current_minute_usage": 2,
-                "current_day_usage": 42
+                "per_minute": db_api_key.rate_limit_per_minute,
+                "per_day": db_api_key.rate_limit_per_day,
+                "current_minute_usage": requests_this_minute,
+                "current_day_usage": requests_today
             },
-            "validated_at": datetime.utcnow().isoformat()
+            "created_at": db_api_key.created_at.isoformat(),
+            "last_used_at": db_api_key.last_used_at.isoformat() if db_api_key.last_used_at else None,
+            "validated_at": now.isoformat()
         }
         
     except Exception as e:
-        logger.error("Failed to validate API key", error=str(e))
+        logger.error("Failed to validate API key", error=str(e), key_id=api_key_info.key_id)
         raise HTTPException(status_code=500, detail="Failed to validate API key")

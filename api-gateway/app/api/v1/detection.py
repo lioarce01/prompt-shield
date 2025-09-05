@@ -17,6 +17,8 @@ from fastapi.responses import JSONResponse
 
 from app.core.config import get_settings
 from app.core.openapi import get_openapi_examples
+from app.core.security import APIKeyInfo
+from app.api.dependencies import get_current_api_key, get_database
 from app.models.detection import (
     SingleDetectionRequest,
     DetectionResponseModel,
@@ -25,6 +27,7 @@ from app.models.detection import (
     AsyncDetectionRequest,
     AsyncDetectionResponse
 )
+from app.models.auth import UsageLog
 from app.services.detection_client import DetectionClient
 from app.utils.validators import validate_text_safety
 
@@ -85,7 +88,10 @@ def get_detection_client(request: Request) -> DetectionClient:
 )
 async def detect_prompt_injection(
     request: SingleDetectionRequest,
-    client: DetectionClient = Depends(get_detection_client)
+    http_request: Request,
+    client: DetectionClient = Depends(get_detection_client),
+    api_key_info: APIKeyInfo = Depends(get_current_api_key),
+    db = Depends(get_database)
 ) -> DetectionResponseModel:
     """
     Analyze text for prompt injection attacks
@@ -155,6 +161,40 @@ async def detect_prompt_injection(
             go_processing_time_ms=result.processing_time_ms
         )
         
+        # Log usage to database for analytics
+        try:
+            usage_log = UsageLog(
+                api_key_id=uuid.UUID(api_key_info.key_id),
+                endpoint="detect",
+                request_size=len(request.text),
+                response_time_ms=total_time_ms,
+                is_malicious=result.is_malicious,
+                confidence=result.confidence,
+                threat_types=result.threat_types,
+                user_agent=http_request.headers.get("user-agent"),
+                ip_address=http_request.client.host if http_request.client else None,
+                status_code=200
+            )
+            
+            db.add(usage_log)
+            await db.commit()
+            
+            logger.debug(
+                "Usage logged successfully",
+                request_id=request_id,
+                key_id=api_key_info.key_id
+            )
+            
+        except Exception as log_error:
+            # Don't break the response if usage logging fails
+            logger.error(
+                "Failed to log usage",
+                request_id=request_id,
+                error=str(log_error),
+                key_id=api_key_info.key_id
+            )
+            # Continue with the response - usage logging failure shouldn't affect detection
+        
         return response
         
     except Exception as e:
@@ -185,6 +225,39 @@ async def detect_prompt_injection(
             )
             
             logger.warning("Used fallback detection", request_id=request_id)
+            
+            # Log usage for fallback detection too
+            try:
+                usage_log = UsageLog(
+                    api_key_id=uuid.UUID(api_key_info.key_id),
+                    endpoint="detect",
+                    request_size=len(request.text),
+                    response_time_ms=total_time_ms,
+                    is_malicious=fallback_result.is_malicious,
+                    confidence=fallback_result.confidence,
+                    threat_types=fallback_result.threat_types,
+                    user_agent=http_request.headers.get("user-agent"),
+                    ip_address=http_request.client.host if http_request.client else None,
+                    status_code=200
+                )
+                
+                db.add(usage_log)
+                await db.commit()
+                
+                logger.debug(
+                    "Fallback usage logged successfully",
+                    request_id=request_id,
+                    key_id=api_key_info.key_id
+                )
+                
+            except Exception as log_error:
+                logger.error(
+                    "Failed to log fallback usage",
+                    request_id=request_id,
+                    error=str(log_error),
+                    key_id=api_key_info.key_id
+                )
+            
             return response
             
         except Exception as fallback_error:
@@ -193,6 +266,39 @@ async def detect_prompt_injection(
                 request_id=request_id,
                 error=str(fallback_error)
             )
+            
+            # Log usage for failed request
+            try:
+                usage_log = UsageLog(
+                    api_key_id=uuid.UUID(api_key_info.key_id),
+                    endpoint="detect",
+                    request_size=len(request.text),
+                    response_time_ms=int((time.time() - request_start) * 1000),
+                    is_malicious=None,  # Unknown due to failure
+                    confidence=None,
+                    threat_types=None,
+                    user_agent=http_request.headers.get("user-agent"),
+                    ip_address=http_request.client.host if http_request.client else None,
+                    status_code=503
+                )
+                
+                db.add(usage_log)
+                await db.commit()
+                
+                logger.debug(
+                    "Failed request usage logged",
+                    request_id=request_id,
+                    key_id=api_key_info.key_id
+                )
+                
+            except Exception as log_error:
+                logger.error(
+                    "Failed to log failed request usage",
+                    request_id=request_id,
+                    error=str(log_error),
+                    key_id=api_key_info.key_id
+                )
+            
             raise HTTPException(
                 status_code=503,
                 detail="Detection service unavailable - both primary and fallback failed"

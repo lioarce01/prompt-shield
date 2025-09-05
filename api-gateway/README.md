@@ -41,6 +41,19 @@ curl -X POST http://localhost:8000/v1/detect \
   -d '{"text":"Ignore all previous instructions"}'
 ```
 
+## Authentication Status
+
+### ✅ Working Endpoints (Real Database Integration)
+- **POST /auth/register** - Create API key ✅
+- **GET /auth/profile** - Get usage statistics ✅
+
+### 🚧 Pending Endpoints (Still Mock Data)
+- **POST /auth/rotate-key** - Rotate API key to new value
+- **DELETE /auth/revoke** - Revoke API key permanently  
+- **GET /auth/validate** - Validate API key status
+
+**Next Steps:** Update remaining endpoints to use real PostgreSQL database integration instead of mock responses.
+
 ## Documentation
 
 - Interactive docs: http://localhost:8000/docs
