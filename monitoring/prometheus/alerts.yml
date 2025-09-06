@@ -1,0 +1,79 @@
+groups:
+  - name: detection-engine.alerts
+    rules:
+      - alert: DetectionEngineDown
+        expr: up{job="detection-engine"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Detection Engine is down"
+          description: "Detection Engine has been down for more than 1 minute"
+
+      - alert: HighLatency
+        expr: histogram_quantile(0.95, detection_latency_seconds_bucket) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High detection latency"
+          description: "P95 latency is {{ $value }}s, above 5s threshold"
+
+      - alert: AllModelsDown
+        expr: sum(circuit_breaker_state == 1) >= 3
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "All detection models are down"
+          description: "All circuit breakers are open - no models available"
+
+      - alert: ModelCircuitBreakerOpen
+        expr: circuit_breaker_state == 1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Model circuit breaker is open"
+          description: "Circuit breaker for {{ $labels.model }} has been open for 2+ minutes"
+
+  - name: api-gateway.alerts
+    rules:
+      - alert: APIGatewayDown
+        expr: up{job="api-gateway"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API Gateway is down"
+          description: "API Gateway has been down for more than 1 minute"
+
+      - alert: HighErrorRate
+        expr: (rate(api_requests_total{status_code!~"2.."}[5m]) / rate(api_requests_total[5m])) > 0.01
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High API error rate"
+          description: "Error rate is {{ $value | humanizePercentage }}, above 1% threshold"
+
+      - alert: RateLimitAbuseDetected
+        expr: increase(rate_limit_blocks_total[1h]) > 1000
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Rate limit abuse detected"
+          description: "More than 1000 rate limit blocks in the last hour"
+
+  - name: system.alerts
+    rules:
+      - alert: HighMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 0.90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage"
+          description: "Memory usage is above 90%"
+        # Only active when node exporter is available

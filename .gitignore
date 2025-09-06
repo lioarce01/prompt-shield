@@ -6,6 +6,7 @@
 CLAUDE.md
 api-gateway/planning.md
 ENHANCEMENTS.md
+MONITORING_IMPLEMENTATION.md
 
 # API Keys and Secrets (Critical - Never commit)
 env/
@@ -144,7 +145,6 @@ detection-engine/main.exe
 # Performance and Monitoring
 **/performance-reports/
 **/metrics/
-**/monitoring/
 
 # Documentation Build
 **/docs/build/

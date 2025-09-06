@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"prompt-injection-detection/internal/config"
 	"prompt-injection-detection/internal/detector"
@@ -56,6 +57,9 @@ func main() {
 		v1.GET("/circuit-breakers", handlers.GetCircuitBreakers)
 		v1.POST("/circuit-breakers/:model/reset", handlers.ResetCircuitBreaker)
 	}
+
+	// Prometheus metrics endpoint
+	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
 	// Create HTTP server
 	server := &http.Server{

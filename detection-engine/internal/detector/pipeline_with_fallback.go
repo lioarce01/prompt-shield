@@ -6,15 +6,17 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
+	"prompt-injection-detection/internal/metrics"
 )
 
 // FallbackPipeline orchestrates multiple AI models with circuit breaker fallback
 type FallbackPipeline struct {
-	modelRegistry   *ModelRegistry
-	circuitBreakers map[string]*CircuitBreaker
-	llmDetector     *LLMDetector
-	logger          *logrus.Logger
-	metrics         *Metrics
+	modelRegistry     *ModelRegistry
+	circuitBreakers   map[string]*CircuitBreaker
+	llmDetector       *LLMDetector
+	logger            *logrus.Logger
+	metrics           *Metrics
+	metricsCollector  *metrics.MetricsCollector
 
 	// Configuration
 	confidenceThreshold float64
@@ -32,6 +34,7 @@ func NewFallbackPipeline(logger *logrus.Logger) *FallbackPipeline {
 		llmDetector:         llmDetector,
 		logger:              logger,
 		metrics:             NewMetrics(),
+		metricsCollector:    metrics.NewMetricsCollector(),
 		confidenceThreshold: 0.6,
 		startTime:           time.Now(),
 	}
@@ -137,6 +140,18 @@ func (p *FallbackPipeline) Analyze(ctx context.Context, req *DetectionRequest) (
 		// Success! Build and return response
 		response := p.buildResponse(result, config, time.Since(startTime), model.Name)
 		p.metrics.RecordSuccess(time.Since(startTime), response)
+		
+		// Record Prometheus metrics
+		resultType := "benign"
+		if response.IsMalicious {
+			resultType = "malicious"
+		}
+		p.metricsCollector.RecordDetectionRequest(
+			model.Name, 
+			resultType, 
+			response.ThreatTypes, 
+			time.Since(startTime),
+		)
 		
 		p.logger.WithFields(logrus.Fields{
 			"model":       model.Name,

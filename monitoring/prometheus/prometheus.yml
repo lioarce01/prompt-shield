@@ -1,0 +1,44 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - "alerts.yml"
+
+scrape_configs:
+  # Detection Engine Metrics
+  - job_name: 'detection-engine'
+    static_configs:
+      - targets: ['detection-engine:8080']
+    metrics_path: /metrics
+    scrape_interval: 10s
+    scrape_timeout: 5s
+    honor_labels: true
+    params:
+      format: ['prometheus']
+
+  # API Gateway Metrics  
+  - job_name: 'api-gateway'
+    static_configs:
+      - targets: ['api-gateway:8000']
+    metrics_path: /metrics
+    scrape_interval: 10s
+    scrape_timeout: 5s
+    honor_labels: true
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Node exporter for system metrics (optional)
+  - job_name: 'node'
+    static_configs:
+      - targets: []
+    # Add when needed for system monitoring
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+      # Add alertmanager when implementing alerting

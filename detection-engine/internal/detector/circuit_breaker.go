@@ -3,6 +3,8 @@ package detector
 import (
 	"sync"
 	"time"
+	
+	"prompt-injection-detection/internal/metrics"
 )
 
 // CircuitState represents the state of a circuit breaker
@@ -29,6 +31,7 @@ type CircuitBreaker struct {
 	totalRequests       int64
 	successfulRequests  int64
 	failedRequests      int64
+	metricsCollector    *metrics.MetricsCollector
 }
 
 // CircuitBreakerConfig holds configuration for circuit breaker
