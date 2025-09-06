@@ -222,7 +222,7 @@ func (h *FallbackDetectionHandler) DiagnoseLLM(c *gin.Context) {
 		"api_key_configured":     health.APIKeyConfigured,
 		"models":                 models,
 		"circuit_breaker_stats":  circuitBreakers,
-		"fallback_strategy":      "ProtectAI -> Meta Llama -> Gemini -> HTTP 503",
+		"fallback_strategy":      "ProtectAI -> Moonshot-Kimi-K2 -> Gemini -> HTTP 503",
 		"note":                   "Circuit breaker enabled with automatic fallback",
 	}
 

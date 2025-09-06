@@ -189,6 +189,8 @@ func (p *FallbackPipeline) detectWithModel(model ModelConfig, text string) (*Det
 		return p.llmDetector.detectWithSpecificEndpoint(text, model)
 	case ProviderGoogle:
 		return p.llmDetector.detectWithSpecificEndpoint(text, model)
+	case ProviderOpenRouter:
+		return p.llmDetector.detectWithSpecificEndpoint(text, model)
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", model.Provider)
 	}
