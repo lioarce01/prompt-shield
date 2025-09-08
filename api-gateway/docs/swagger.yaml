@@ -1,6 +1,6 @@
 openapi: 3.0.3
 info:
-  title: Prompt Injection Defense API
+  title: Prompt Shield API
   description: |
     ## Real-time Prompt Injection Detection API
     
@@ -54,7 +54,7 @@ info:
     
   version: 1.0.0
   contact:
-    name: Prompt Injection Defense Platform
+    name: Prompt Shield Platform
     url: https://github.com/lioarce01/prompt-shield
     email: lioarce1@gmail.com
   license:

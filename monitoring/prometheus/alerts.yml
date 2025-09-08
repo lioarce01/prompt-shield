@@ -37,6 +37,33 @@ groups:
           summary: "Model circuit breaker is open"
           description: "Circuit breaker for {{ $labels.model }} has been open for 2+ minutes"
 
+      - alert: DetectionThroughputLow
+        expr: rate(detection_requests_total[5m]) < 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low detection throughput"
+          description: "Detection requests rate is {{ $value }}/s, below 0.1/s threshold"
+
+      - alert: MaliciousDetectionSpike
+        expr: rate(detection_requests_total{result="malicious"}[5m]) > 10
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High volume of malicious detections"
+          description: "Malicious detection rate is {{ $value }}/s, possible attack in progress"
+
+      - alert: ModelFailureRate
+        expr: (rate(detection_requests_total{result="error"}[5m]) / rate(detection_requests_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High model failure rate"
+          description: "Model failure rate is {{ $value | humanizePercentage }}, above 5% threshold"
+
   - name: api-gateway.alerts
     rules:
       - alert: APIGatewayDown
@@ -49,13 +76,40 @@ groups:
           description: "API Gateway has been down for more than 1 minute"
 
       - alert: HighErrorRate
-        expr: (rate(api_requests_total{status_code!~"2.."}[5m]) / rate(api_requests_total[5m])) > 0.01
-        for: 10m
+        expr: (rate(api_requests_total{status!~"2.."}[5m]) / rate(api_requests_total[5m])) > 0.01
+        for: 5m
         labels:
           severity: warning
         annotations:
           summary: "High API error rate"
           description: "Error rate is {{ $value | humanizePercentage }}, above 1% threshold"
+
+      - alert: CriticalErrorRate
+        expr: (rate(api_requests_total{status!~"2.."}[5m]) / rate(api_requests_total[5m])) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical API error rate"
+          description: "Error rate is {{ $value | humanizePercentage }}, above 5% threshold"
+
+      - alert: APIGatewayHighLatency
+        expr: histogram_quantile(0.95, rate(api_request_duration_seconds_bucket[5m])) > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API Gateway high latency"
+          description: "P95 API latency is {{ $value }}s, above 3s threshold"
+
+      - alert: APIGatewayCriticalLatency
+        expr: histogram_quantile(0.95, rate(api_request_duration_seconds_bucket[5m])) > 8
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API Gateway critical latency"
+          description: "P95 API latency is {{ $value }}s, above 8s threshold (SLA violation)"
 
       - alert: RateLimitAbuseDetected
         expr: increase(rate_limit_blocks_total[1h]) > 1000

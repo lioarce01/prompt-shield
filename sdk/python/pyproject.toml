@@ -1,0 +1,125 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "prompt-shield"
+version = "1.0.0"
+description = "Python SDK for Prompt Shield - Real-time prompt injection detection"
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [
+    {name = "Prompt Shield Team", email = "contact@prompt-shield.com"},
+]
+maintainers = [
+    {name = "Prompt Shield Team", email = "contact@prompt-shield.com"},
+]
+keywords = [
+    "prompt-injection", 
+    "ai-security", 
+    "llm-security", 
+    "prompt-shield", 
+    "machine-learning",
+    "cybersecurity"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10", 
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+requires-python = ">=3.8"
+dependencies = [
+    "httpx>=0.24.0",
+    "pydantic>=2.0.0", 
+    "typing-extensions>=4.0.0",
+]
+
+[project.optional-dependencies]
+async = ["aiofiles>=0.8.0"]
+cache = ["redis>=4.0.0"]
+integrations = [
+    "fastapi>=0.100.0",
+    "flask>=2.0.0", 
+    "django>=4.0.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
+    "black>=22.0.0",
+    "isort>=5.10.0",
+    "mypy>=1.0.0",
+    "pre-commit>=2.20.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/prompt-shield/prompt-shield-python"
+Documentation = "https://docs.prompt-shield.com/sdk/python"
+Repository = "https://github.com/prompt-shield/prompt-shield-python"
+"Bug Reports" = "https://github.com/prompt-shield/prompt-shield-python/issues"
+Changelog = "https://github.com/prompt-shield/prompt-shield-python/releases"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/prompt_shield"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/tests",
+    "/examples",
+    "/README.md",
+    "/LICENSE",
+    "/CHANGELOG.md",
+]
+
+# Development tools configuration
+[tool.black]
+line-length = 100
+target-version = ['py38', 'py39', 'py310', 'py311', 'py312']
+
+[tool.isort]
+profile = "black"
+line_length = 100
+multi_line_output = 3
+
+[tool.mypy]
+python_version = "3.8"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+addopts = [
+    "--strict-markers",
+    "--strict-config", 
+    "--cov=src/prompt_shield",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "--cov-fail-under=90"
+]
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+]

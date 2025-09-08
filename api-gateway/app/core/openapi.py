@@ -2,7 +2,7 @@
 OpenAPI/Swagger documentation configuration
 
 Enhanced documentation with examples, descriptions, and proper schema definitions
-for the Prompt Injection Defense Platform API Gateway.
+for the Prompt Shield Platform API Gateway.
 """
 from typing import Dict, Any
 
@@ -234,7 +234,7 @@ def customize_openapi_schema(app) -> Dict[str, Any]:
         return app.openapi_schema
     
     openapi_schema = get_openapi(
-        title="Prompt Injection Defense API",
+        title="Prompt Shield API",
         version="1.0.0",
         description=get_api_description(),
         routes=app.routes,
@@ -284,7 +284,7 @@ def customize_openapi_schema(app) -> Dict[str, Any]:
     # Add contact and license information
     openapi_schema["info"].update({
         "contact": {
-            "name": "Prompt Injection Defense Platform",
+            "name": "Prompt Shield Platform",
             "url": "https://github.com/your-org/prompt-injection-defense-platform",
             "email": "support@prompt-defense.com"
         },

@@ -65,6 +65,7 @@ class SingleDetectionRequest(BaseModel):
     )
     
     model_config = {
+        "protected_namespaces": (),
         "json_schema_extra": {
             "examples": [
                 {

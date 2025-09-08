@@ -42,6 +42,9 @@ func NewFallbackPipeline(logger *logrus.Logger) *FallbackPipeline {
 	// Initialize circuit breakers for each enabled model
 	pipeline.initializeCircuitBreakers()
 
+	// Start background metric updates
+	go pipeline.updateCircuitBreakerMetrics()
+
 	logger.Info("Fallback pipeline initialized with circuit breakers")
 	pipeline.logModelStatus()
 
@@ -61,7 +64,9 @@ func (p *FallbackPipeline) initializeCircuitBreakers() {
 			MaxTimeout:       model.CircuitBreaker.MaxTimeout,
 		}
 		
-		p.circuitBreakers[model.Name] = NewCircuitBreaker(cbConfig)
+		cb := NewCircuitBreaker(cbConfig)
+		cb.SetMetricsCollector(p.metricsCollector)
+		p.circuitBreakers[model.Name] = cb
 		p.logger.WithFields(logrus.Fields{
 			"model":             model.Name,
 			"provider":          model.Provider,
@@ -311,6 +316,30 @@ func (p *FallbackPipeline) GetCircuitBreakerStats() map[string]CircuitBreakerSta
 	}
 	
 	return stats
+}
+
+// updateCircuitBreakerMetrics runs in background to update circuit breaker state metrics
+func (p *FallbackPipeline) updateCircuitBreakerMetrics() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	
+	for range ticker.C {
+		for modelName, cb := range p.circuitBreakers {
+			// Record current circuit breaker state
+			stateInt := metrics.CircuitBreakerStateToInt(cb.GetStateName())
+			p.metricsCollector.RecordCircuitBreakerState(modelName, stateInt)
+			
+			// Record model availability (opposite of circuit breaker open state)
+			isAvailable := cb.GetState() != CircuitOpen
+			p.metricsCollector.RecordModelAvailability(modelName, isAvailable)
+			
+			// Update success rate if we have request data
+			stats := cb.GetStats()
+			if stats.TotalRequests > 0 {
+				p.metricsCollector.UpdateModelSuccessRate(modelName, stats.SuccessRate)
+			}
+		}
+	}
 }
 
 // ResetCircuitBreaker manually resets a specific circuit breaker

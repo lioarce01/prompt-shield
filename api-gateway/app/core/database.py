@@ -17,7 +17,6 @@ from sqlalchemy.pool import StaticPool
 from app.core.config import get_settings
 
 logger = structlog.get_logger()
-settings = get_settings()
 
 # Create base class for models
 Base = declarative_base()
@@ -32,6 +31,8 @@ async def create_engine():
     global engine, SessionLocal
     
     try:
+        settings = get_settings()
+        
         # Convert postgres:// to postgresql+asyncpg://
         db_url = settings.DATABASE_URL
         if db_url.startswith("postgresql://") and "+asyncpg" not in db_url:
@@ -79,7 +80,13 @@ async def init_db():
         await test_db_connection()
         
         # Create tables (in production, use Alembic migrations instead)
-        if settings.DEBUG:
+        try:
+            settings = get_settings()
+            debug_mode = settings.DEBUG
+        except Exception:
+            debug_mode = True  # Safe default
+            
+        if debug_mode:
             async with engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
             logger.info("Database tables created")
@@ -122,8 +129,18 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """FastAPI dependency for database sessions"""
-    async with get_db_session() as session:
-        yield session
+    if not SessionLocal:
+        await create_engine()
+    
+    async with SessionLocal() as session:
+        try:
+            yield session
+        except Exception as e:
+            await session.rollback()
+            logger.error("Database session error", error=str(e))
+            raise
+        finally:
+            await session.close()
 
 
 async def close_db():

@@ -1,4 +1,4 @@
-# Prompt Injection Defense Platform - Global .gitignore
+# Prompt Shield Platform - Global .gitignore
 # =====================================================
 
 # Claude Code Assistant Files (Never commit)
@@ -7,6 +7,8 @@ CLAUDE.md
 api-gateway/planning.md
 ENHANCEMENTS.md
 MONITORING_IMPLEMENTATION.md
+frontend-planning.md
+database/
 
 # API Keys and Secrets (Critical - Never commit)
 env/

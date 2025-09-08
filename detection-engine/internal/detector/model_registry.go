@@ -158,7 +158,7 @@ func getStartupModelConfigs() []ModelConfig {
 			URL:             "https://openrouter.ai/api/v1/chat/completions",
 			APIKeyEnvVar:    "OPENROUTER_API_KEY",
 			Timeout:         15 * time.Second,
-			Priority:        1,   // Primary GenAI model
+			Priority:        1,
 			CostPerRequest:  0.0, // Free
 			ExpectedLatency: 4 * time.Second,
 			AccuracyScore:   0.90,
@@ -178,11 +178,51 @@ func getStartupModelConfigs() []ModelConfig {
 			URL:             "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
 			APIKeyEnvVar:    "GEMINI_API_KEY",
 			Timeout:         15 * time.Second,
-			Priority:        2,               // Secondary GenAI fallback
+			Priority:        2,
 			CostPerRequest:  0.0,             // Free tier
 			ExpectedLatency: 2 * time.Second, // Much faster than 2.0
 			AccuracyScore:   0.92,            // Slightly lower than 2.0 but much faster
 			Enabled:         true,            // Re-enabled with separate 1.5 Flash quota
+			CircuitBreaker: CBConfig{
+				FailureThreshold: 3, // More sensitive for GenAI
+				SuccessThreshold: 2,
+				Timeout:          60 * time.Second, // Longer timeout for GenAI
+				MaxTimeout:       10 * time.Minute,
+			},
+		},
+		{
+			Name:            "Sonoma-Sky-Alpha",
+			Provider:        ProviderOpenRouter,
+			Type:            ModelTypeGenAI,
+			Model:           "openrouter/sonoma-sky-alpha",
+			URL:             "https://openrouter.ai/api/v1/chat/completions",
+			APIKeyEnvVar:    "OPENROUTER_SONOMA_SKY_API_KEY",
+			Timeout:         15 * time.Second,
+			Priority:        3,
+			CostPerRequest:  0.0, // Free
+			ExpectedLatency: 4 * time.Second,
+			AccuracyScore:   0.90,
+			Enabled:         true,
+			CircuitBreaker: CBConfig{
+				FailureThreshold: 3, // More sensitive for GenAI
+				SuccessThreshold: 2,
+				Timeout:          60 * time.Second, // Longer timeout for GenAI
+				MaxTimeout:       10 * time.Minute,
+			},
+		},
+		{
+			Name:            "Deepseek-V3.1",
+			Provider:        ProviderOpenRouter,
+			Type:            ModelTypeGenAI,
+			Model:           "deepseek/deepseek-chat-v3.1:free",
+			URL:             "https://openrouter.ai/api/v1/chat/completions",
+			APIKeyEnvVar:    "OPENROUTER_DEEPSEEK_API_KEY",
+			Timeout:         15 * time.Second,
+			Priority:        5,
+			CostPerRequest:  0.0, // Free
+			ExpectedLatency: 4 * time.Second,
+			AccuracyScore:   0.90,
+			Enabled:         true,
 			CircuitBreaker: CBConfig{
 				FailureThreshold: 3, // More sensitive for GenAI
 				SuccessThreshold: 2,

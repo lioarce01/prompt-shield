@@ -1,1 +1,1 @@
-# FastAPI Gateway for Prompt Injection Defense Platform
+# FastAPI Gateway for Prompt Shield Platform

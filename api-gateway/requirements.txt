@@ -1,8 +1,9 @@
 # FastAPI Core
 fastapi==0.110.0
 uvicorn[standard]==0.27.0
-pydantic==2.6.1
+pydantic[email]==2.6.1
 pydantic-settings==2.2.1
+email-validator==2.1.0
 
 # HTTP Client for Go service communication
 httpx==0.26.0
@@ -29,6 +30,10 @@ celery[redis]==5.3.6
 # Monitoring & Logging
 structlog==24.1.0
 prometheus-client==0.19.0
+
+# WebSocket Support
+python-socketio[asyncio]==5.11.0
+redis[hiredis]==5.0.1
 
 # Development & Testing
 pytest==7.4.4

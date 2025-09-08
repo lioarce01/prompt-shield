@@ -5,13 +5,15 @@ services:
     build:
       context: ./detection-engine
       dockerfile: docker/Dockerfile
-    container_name: prompt-defense-detection
+    container_name: prompt-shield-detection
     ports:
       - "8080:8080"
     environment:
       - HUGGINGFACE_API_KEY=${HUGGINGFACE_API_KEY}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENROUTER_DEEPSEEK_API_KEY=${OPENROUTER_DEEPSEEK_API_KEY}
+      - OPENROUTER_SONOMA_SKY_API_KEY=${OPENROUTER_SONOMA_SKY_API_KEY}
     volumes:
       - ./detection-engine/configs:/app/configs:ro
     healthcheck:
@@ -22,7 +24,7 @@ services:
       start_period: 30s
     restart: unless-stopped
     networks:
-      - prompt-defense
+      - prompt-shield
 
   # FastAPI Gateway
   api-gateway:
@@ -30,17 +32,22 @@ services:
       context: ./api-gateway
       dockerfile: docker/Dockerfile
       target: production
-    container_name: prompt-defense-gateway
+    container_name: prompt-shield-gateway
     ports:
       - "8000:8000"
     environment:
       - DEBUG=true
       - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-in-production}
-      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/prompt_defense
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/prompt_shield
       - REDIS_URL=redis://redis:6379/0
       - DETECTION_ENGINE_URL=http://detection-engine:8080
       - CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http://localhost:8000
       - ALLOWED_HOSTS=localhost,127.0.0.1,api.example.com
+      # Multi-tenant settings
+      - TENANT_ISOLATION_ENABLED=true
+      - TENANT_DEFAULT_DETECTION_THRESHOLD=0.7
+      - TENANT_DEFAULT_RATE_LIMIT_PER_MINUTE=1000
+      - TENANT_DEFAULT_CACHE_TTL_SECONDS=1800
     depends_on:
       postgres:
         condition: service_healthy
@@ -58,34 +65,34 @@ services:
     volumes:
       - ./api-gateway/logs:/app/logs
     networks:
-      - prompt-defense
+      - prompt-shield
 
   # PostgreSQL Database
   postgres:
     image: postgres:15-alpine
-    container_name: prompt-defense-postgres
+    container_name: prompt-shield-postgres
     environment:
-      POSTGRES_DB: prompt_defense
+      POSTGRES_DB: prompt_shield
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./api-gateway/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+      - ./api-gateway/database/tenant_schema.sql:/docker-entrypoint-initdb.d/01-tenant_schema.sql
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d prompt_defense"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d prompt_shield"]
       interval: 10s
       timeout: 5s
       retries: 5
     restart: unless-stopped
     networks:
-      - prompt-defense
+      - prompt-shield
 
   # Redis Cache
   redis:
     image: redis:7-alpine
-    container_name: prompt-defense-redis
+    container_name: prompt-shield-redis
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     volumes:
       - redis_data:/data
@@ -98,12 +105,12 @@ services:
       retries: 3
     restart: unless-stopped
     networks:
-      - prompt-defense
+      - prompt-shield
 
   # Nginx Reverse Proxy (optional for production)
   nginx:
     image: nginx:alpine
-    container_name: prompt-defense-nginx
+    container_name: prompt-shield-nginx
     ports:
       - "80:80"
       - "443:443"
@@ -114,14 +121,14 @@ services:
       - api-gateway
     restart: unless-stopped
     networks:
-      - prompt-defense
+      - prompt-shield
     profiles:
       - production
 
   # Prometheus Monitoring
   prometheus:
     image: prom/prometheus:latest
-    container_name: prompt-defense-prometheus
+    container_name: prompt-shield-prometheus
     ports:
       - "9090:9090"
     volumes:
@@ -140,12 +147,12 @@ services:
       - api-gateway
     restart: unless-stopped
     networks:
-      - prompt-defense
+      - prompt-shield
 
   # Grafana Dashboards
   grafana:
     image: grafana/grafana:latest
-    container_name: prompt-defense-grafana
+    container_name: prompt-shield-grafana
     ports:
       - "3000:3000"
     environment:
@@ -160,7 +167,7 @@ services:
       - prometheus
     restart: unless-stopped
     networks:
-      - prompt-defense
+      - prompt-shield
 
 volumes:
   postgres_data:
@@ -173,7 +180,7 @@ volumes:
     driver: local
 
 networks:
-  prompt-defense:
+  prompt-shield:
     driver: bridge
     ipam:
       config:

@@ -73,6 +73,7 @@ func (cb *CircuitBreaker) allowRequest() bool {
 	defer cb.mutex.Unlock()
 
 	now := time.Now()
+	oldState := cb.state
 
 	switch cb.state {
 	case CircuitClosed:
@@ -82,6 +83,12 @@ func (cb *CircuitBreaker) allowRequest() bool {
 		if now.Sub(cb.lastFailureTime) > cb.timeout {
 			cb.state = CircuitHalfOpen
 			cb.consecutiveSuccesses = 0
+			
+			// Record state transition
+			if cb.metricsCollector != nil {
+				cb.metricsCollector.RecordCircuitBreakerTransition(cb.name, cb.stateToString(oldState), cb.stateToString(cb.state))
+			}
+			
 			return true
 		}
 		return false
@@ -96,6 +103,8 @@ func (cb *CircuitBreaker) allowRequest() bool {
 func (cb *CircuitBreaker) recordResult(success bool) {
 	cb.mutex.Lock()
 	defer cb.mutex.Unlock()
+
+	oldState := cb.state
 
 	if success {
 		cb.consecutiveFailures = 0
@@ -123,6 +132,13 @@ func (cb *CircuitBreaker) recordResult(success bool) {
 			}
 			cb.timeout = newTimeout
 		}
+	}
+
+	// Record state transition if state changed
+	if oldState != cb.state && cb.metricsCollector != nil {
+		fromState := cb.stateToString(oldState)
+		toState := cb.stateToString(cb.state)
+		cb.metricsCollector.RecordCircuitBreakerTransition(cb.name, fromState, toState)
 	}
 }
 
@@ -220,4 +236,25 @@ type CircuitBreakerError struct {
 
 func (e *CircuitBreakerError) Error() string {
 	return e.Message
+}
+
+// SetMetricsCollector sets the metrics collector for the circuit breaker
+func (cb *CircuitBreaker) SetMetricsCollector(collector *metrics.MetricsCollector) {
+	cb.mutex.Lock()
+	defer cb.mutex.Unlock()
+	cb.metricsCollector = collector
+}
+
+// stateToString converts a CircuitState to its string representation
+func (cb *CircuitBreaker) stateToString(state CircuitState) string {
+	switch state {
+	case CircuitClosed:
+		return "CLOSED"
+	case CircuitOpen:
+		return "OPEN"
+	case CircuitHalfOpen:
+		return "HALF_OPEN"
+	default:
+		return "UNKNOWN"
+	}
 }

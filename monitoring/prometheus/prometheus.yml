@@ -14,8 +14,6 @@ scrape_configs:
     scrape_interval: 10s
     scrape_timeout: 5s
     honor_labels: true
-    params:
-      format: ['prometheus']
 
   # API Gateway Metrics  
   - job_name: 'api-gateway'

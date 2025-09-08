@@ -575,7 +575,7 @@ Be thorough, precise, and err on the side of security when patterns are ambiguou
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+endpoint.APIKey)
 	req.Header.Set("HTTP-Referer", "https://prompt-injection-defense.local")
-	req.Header.Set("X-Title", "Prompt Injection Defense Platform")
+	req.Header.Set("X-Title", "Prompt Shield Platform")
 
 	resp, err := l.client.Do(req)
 	if err != nil {

@@ -1,427 +1,381 @@
 """
-Authentication API endpoints
-
-Handles API key management, user registration, and authentication
-for accessing the prompt injection detection services.
+Authentication Endpoints
+JWT-based login, registration, and token management
 """
-import secrets
-import hashlib
-from datetime import datetime, timedelta
-from typing import Dict, Any, Optional
 
-import structlog
-from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel, Field
+import logging
+from datetime import datetime
+from typing import Optional, Dict, Any
 
-from app.core.config import get_settings
-from app.core.security import generate_api_key, hash_api_key, APIKeyInfo
-from app.utils.validators import validate_api_key_name, validate_rate_limits
-from app.api.dependencies import get_current_api_key, get_database
-from app.models.auth import APIKey, UsageLog
-from sqlalchemy import select, func
-from sqlalchemy.sql import and_
-import uuid
+from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from pydantic import BaseModel, EmailStr, Field
 
-logger = structlog.get_logger()
-router = APIRouter()
-settings = get_settings()
-
-
-class APIKeyRequest(BaseModel):
-    """Request to create a new API key"""
-    name: str = Field(..., max_length=100, description="Human-readable name for the API key")
-    rate_limit_per_minute: Optional[int] = Field(
-        default=None,
-        ge=1,
-        le=1000,
-        description="Custom rate limit per minute (default: 60)"
-    )
-    rate_limit_per_day: Optional[int] = Field(
-        default=None,
-        ge=1,
-        le=100000,
-        description="Custom rate limit per day (default: 10000)"
-    )
-
-
-class APIKeyResponse(BaseModel):
-    """Response containing new API key information"""
-    api_key: str = Field(..., description="The generated API key (store securely - won't be shown again)")
-    key_id: str = Field(..., description="Unique identifier for this API key")
-    name: str = Field(..., description="Human-readable name")
-    rate_limit_per_minute: int = Field(..., description="Requests per minute allowed")
-    rate_limit_per_day: int = Field(..., description="Requests per day allowed")
-    created_at: datetime = Field(..., description="When the key was created")
-    expires_at: Optional[datetime] = Field(None, description="When the key expires (if applicable)")
-
-
-class APIKeyInfo(BaseModel):
-    """API key information without the actual key"""
-    key_id: str = Field(..., description="Unique identifier")
-    name: str = Field(..., description="Human-readable name")
-    rate_limit_per_minute: int = Field(..., description="Requests per minute allowed")
-    rate_limit_per_day: int = Field(..., description="Requests per day allowed")
-    created_at: datetime = Field(..., description="Creation timestamp")
-    last_used_at: Optional[datetime] = Field(None, description="Last usage timestamp")
-    is_active: bool = Field(..., description="Whether the key is active")
-    total_requests: int = Field(default=0, description="Total requests made with this key")
-
-
-class UsageStats(BaseModel):
-    """Usage statistics for an API key"""
-    key_id: str = Field(..., description="API key identifier")
-    name: str = Field(..., description="API key name")
-    requests_today: int = Field(..., description="Requests made today")
-    requests_this_minute: int = Field(..., description="Requests in current minute")
-    rate_limit_per_minute: int = Field(..., description="Rate limit per minute")
-    rate_limit_per_day: int = Field(..., description="Rate limit per day")
-    total_requests: int = Field(..., description="Total requests ever")
-    malicious_detections: int = Field(..., description="Total malicious content detected")
-    last_used_at: Optional[datetime] = Field(None, description="Last usage")
-
-
-
-
-
-
-@router.post("/register", response_model=APIKeyResponse)
-async def create_api_key(
-    request: APIKeyRequest,
-    db = Depends(get_database)
-) -> APIKeyResponse:
-    """
-    Create a new API key for accessing detection services
-    
-    **Generate API Key** - Creates a new API key with specified rate limits
-    and usage tracking. Store the returned key securely as it won't be shown again.
-    
-    **Default Limits:**
-    - 60 requests per minute
-    - 10,000 requests per day
-    
-    **Custom Limits:**
-    - Up to 1,000 requests per minute
-    - Up to 100,000 requests per day
-    """
-    try:
-        # Generate new API key
-        api_key = generate_api_key()
-        key_hash = hash_api_key(api_key)
-        key_id = secrets.token_hex(16)
-        
-        # Set rate limits (use defaults if not specified)
-        rate_limit_per_minute = request.rate_limit_per_minute or settings.DEFAULT_RATE_LIMIT_PER_MINUTE
-        rate_limit_per_day = request.rate_limit_per_day or settings.DEFAULT_RATE_LIMIT_PER_DAY
-        
-        # Create API key record in database
-        db_api_key = APIKey(
-            key_hash=key_hash,
-            name=request.name,
-            rate_limit_per_minute=rate_limit_per_minute,
-            rate_limit_per_day=rate_limit_per_day
-        )
-        
-        # Save to database
-        db.add(db_api_key)
-        await db.commit()
-        await db.refresh(db_api_key)
-        
-        # Log API key creation (don't log the actual key!)
-        logger.info(
-            "API key created",
-            key_id=str(db_api_key.id),
-            name=request.name,
-            rate_limit_per_minute=rate_limit_per_minute,
-            rate_limit_per_day=rate_limit_per_day
-        )
-        
-        return APIKeyResponse(
-            api_key=api_key,
-            key_id=str(db_api_key.id),
-            name=request.name,
-            rate_limit_per_minute=rate_limit_per_minute,
-            rate_limit_per_day=rate_limit_per_day,
-            created_at=db_api_key.created_at,
-            expires_at=None  # No expiration for now
-        )
-        
-    except Exception as e:
-        logger.error("Failed to create API key", error=str(e))
-        raise HTTPException(status_code=500, detail="Failed to create API key")
-
-
-@router.get(
-    "/profile", 
-    response_model=UsageStats,
-    responses={
-        401: {"description": "Unauthorized - API key required"}
-    }
+from app.core.database import get_db
+from app.core.jwt_auth import (
+    jwt_manager, 
+    hash_password, 
+    verify_password,
+    TokenExpiredError,
+    InvalidTokenError
 )
-async def get_api_key_profile(
-    api_key_info: APIKeyInfo = Depends(get_current_api_key),
-    db = Depends(get_database)
-) -> UsageStats:
-    """
-    Get usage statistics and profile for your API key
+from app.core.rbac import get_current_tenant_from_jwt, require_authentication
+from app.models.tenant import Tenant
+
+router = APIRouter(prefix="/auth", tags=["Authentication"])
+logger = logging.getLogger(__name__)
+security = HTTPBearer()
+
+# Request/Response Models
+class RegisterRequest(BaseModel):
+    """User registration request"""
+    name: str = Field(..., min_length=1, max_length=255, description="Full name")
+    email: EmailStr = Field(..., description="Email address")
+    password: str = Field(..., min_length=8, max_length=100, description="Password (min 8 characters)")
+    company_name: Optional[str] = Field(None, max_length=255, description="Company name")
     
-    **Profile Information** - Returns current usage statistics,
-    rate limits, and activity history for the authenticated API key.
-    """
-    try:
-        logger.info("Profile requested", key_id=api_key_info.key_id)
-        
-        # Get current time boundaries
-        now = datetime.utcnow()
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        minute_start = now.replace(second=0, microsecond=0)
-        
-        # Query usage statistics
-        api_key_uuid = uuid.UUID(api_key_info.key_id)
-        
-        # Total requests
-        total_stmt = select(func.count(UsageLog.id)).where(
-            UsageLog.api_key_id == api_key_uuid
-        )
-        total_result = await db.execute(total_stmt)
-        total_requests = total_result.scalar() or 0
-        
-        # Requests today
-        today_stmt = select(func.count(UsageLog.id)).where(
-            and_(
-                UsageLog.api_key_id == api_key_uuid,
-                UsageLog.created_at >= today_start
-            )
-        )
-        today_result = await db.execute(today_stmt)
-        requests_today = today_result.scalar() or 0
-        
-        # Requests this minute
-        minute_stmt = select(func.count(UsageLog.id)).where(
-            and_(
-                UsageLog.api_key_id == api_key_uuid,
-                UsageLog.created_at >= minute_start
-            )
-        )
-        minute_result = await db.execute(minute_stmt)
-        requests_this_minute = minute_result.scalar() or 0
-        
-        # Malicious detections
-        malicious_stmt = select(func.count(UsageLog.id)).where(
-            and_(
-                UsageLog.api_key_id == api_key_uuid,
-                UsageLog.is_malicious == True
-            )
-        )
-        malicious_result = await db.execute(malicious_stmt)
-        malicious_detections = malicious_result.scalar() or 0
-        
-        # Get API key details for last_used_at
-        api_key_stmt = select(APIKey).where(APIKey.id == api_key_uuid)
-        api_key_result = await db.execute(api_key_stmt)
-        db_api_key = api_key_result.scalar_one()
-        
-        return UsageStats(
-            key_id=api_key_info.key_id,
-            name=api_key_info.name,
-            requests_today=requests_today,
-            requests_this_minute=requests_this_minute,
-            rate_limit_per_minute=api_key_info.rate_limit_per_minute,
-            rate_limit_per_day=api_key_info.rate_limit_per_day,
-            total_requests=total_requests,
-            malicious_detections=malicious_detections,
-            last_used_at=db_api_key.last_used_at or db_api_key.created_at
-        )
-        
-    except Exception as e:
-        logger.error("Failed to get profile", error=str(e))
-        raise HTTPException(status_code=500, detail="Failed to get profile")
-
-
-@router.post(
-    "/rotate-key", 
-    response_model=APIKeyResponse,
-    responses={
-        401: {"description": "Unauthorized - API key required"}
-    }
-)
-async def rotate_api_key(
-    api_key_info: APIKeyInfo = Depends(get_current_api_key),
-    db = Depends(get_database)
-) -> APIKeyResponse:
-    """
-    Rotate your API key to a new value
-    
-    **Security Best Practice** - Generate a new API key while keeping
-    the same configuration and usage history. The old key is immediately invalidated.
-    """
-    try:
-        # Get current API key from database
-        api_key_uuid = uuid.UUID(api_key_info.key_id)
-        api_key_stmt = select(APIKey).where(APIKey.id == api_key_uuid)
-        api_key_result = await db.execute(api_key_stmt)
-        db_api_key = api_key_result.scalar_one_or_none()
-        
-        if not db_api_key:
-            logger.error("API key not found for rotation", key_id=api_key_info.key_id)
-            raise HTTPException(status_code=404, detail="API key not found")
-        
-        # Generate new API key
-        new_api_key = generate_api_key()
-        new_key_hash = hash_api_key(new_api_key)
-        
-        # Update the existing API key with new hash
-        db_api_key.key_hash = new_key_hash
-        db_api_key.created_at = datetime.utcnow()  # Update creation time for the new key
-        
-        # Save changes to database
-        await db.commit()
-        await db.refresh(db_api_key)
-        
-        logger.info("API key rotated", key_id=api_key_info.key_id, name=db_api_key.name)
-        
-        return APIKeyResponse(
-            api_key=new_api_key,
-            key_id=str(db_api_key.id),
-            name=db_api_key.name,
-            rate_limit_per_minute=db_api_key.rate_limit_per_minute,
-            rate_limit_per_day=db_api_key.rate_limit_per_day,
-            created_at=db_api_key.created_at,
-            expires_at=None
-        )
-        
-    except Exception as e:
-        logger.error("Failed to rotate API key", error=str(e), key_id=api_key_info.key_id)
-        raise HTTPException(status_code=500, detail="Failed to rotate API key")
-
-
-@router.delete(
-    "/revoke",
-    responses={
-        401: {"description": "Unauthorized - API key required"}
-    }
-)
-async def revoke_api_key(
-    api_key_info: APIKeyInfo = Depends(get_current_api_key),
-    db = Depends(get_database)
-) -> Dict[str, str]:
-    """
-    Revoke your API key permanently
-    
-    **Permanent Action** - Immediately invalidates your API key.
-    This action cannot be undone. You'll need to create a new key to continue using the service.
-    """
-    try:
-        # Get current API key from database
-        api_key_uuid = uuid.UUID(api_key_info.key_id)
-        api_key_stmt = select(APIKey).where(APIKey.id == api_key_uuid)
-        api_key_result = await db.execute(api_key_stmt)
-        db_api_key = api_key_result.scalar_one_or_none()
-        
-        if not db_api_key:
-            logger.error("API key not found for revocation", key_id=api_key_info.key_id)
-            raise HTTPException(status_code=404, detail="API key not found")
-        
-        # Check if already inactive
-        if not db_api_key.is_active:
-            logger.warning("Attempted to revoke already inactive key", key_id=api_key_info.key_id)
-            return {
-                "message": "API key is already revoked",
-                "key_id": api_key_info.key_id,
-                "revoked_at": db_api_key.last_used_at.isoformat() if db_api_key.last_used_at else db_api_key.created_at.isoformat()
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "name": "John Doe",
+                "email": "john@company.com", 
+                "password": "SecurePass123!",
+                "company_name": "Acme Corp"
             }
-        
-        # Revoke the API key by setting is_active to False
-        db_api_key.is_active = False
-        revoked_at = datetime.utcnow()
-        db_api_key.last_used_at = revoked_at  # Mark revocation time
-        
-        # Save changes to database
-        await db.commit()
-        
-        logger.info("API key revoked", key_id=api_key_info.key_id, name=db_api_key.name)
-        
-        return {
-            "message": "API key revoked successfully",
-            "key_id": api_key_info.key_id,
-            "revoked_at": revoked_at.isoformat()
         }
-        
-    except Exception as e:
-        logger.error("Failed to revoke API key", error=str(e), key_id=api_key_info.key_id)
-        raise HTTPException(status_code=500, detail="Failed to revoke API key")
 
-
-@router.get(
-    "/validate",
-    responses={
-        401: {"description": "Unauthorized - API key required"}
-    }
-)
-async def validate_api_key(
-    api_key_info: APIKeyInfo = Depends(get_current_api_key),
-    db = Depends(get_database)
-) -> Dict[str, Any]:
-    """
-    Validate your API key and check current status
+class LoginRequest(BaseModel):
+    """User login request"""
+    email: EmailStr = Field(..., description="Email address")
+    password: str = Field(..., description="Password")
     
-    **Key Validation** - Verify that your API key is valid and active,
-    and get current rate limiting status.
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "email": "john@company.com",
+                "password": "SecurePass123!"
+            }
+        }
+
+class RefreshRequest(BaseModel):
+    """Token refresh request"""
+    refresh_token: str = Field(..., description="Valid refresh token")
+
+class AuthResponse(BaseModel):
+    """Authentication response with tokens"""
+    success: bool = Field(default=True)
+    access_token: str = Field(..., description="JWT access token")
+    refresh_token: str = Field(..., description="JWT refresh token")
+    token_type: str = Field(default="bearer")
+    expires_in: int = Field(..., description="Access token expiry in seconds")
+    
+    # User information
+    tenant_id: str = Field(..., description="Tenant/User ID")
+    email: str = Field(..., description="User email")
+    name: str = Field(..., description="User name")
+    role: str = Field(..., description="User role")
+    company: Optional[str] = Field(None, description="Company name")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...",
+                "refresh_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...", 
+                "token_type": "bearer",
+                "expires_in": 1800,
+                "tenant_id": "123e4567-e89b-12d3-a456-426614174000",
+                "email": "john@company.com",
+                "name": "John Doe",
+                "role": "user",
+                "company": "Acme Corp"
+            }
+        }
+
+class TokenResponse(BaseModel):
+    """Token refresh response"""
+    access_token: str = Field(..., description="New JWT access token")
+    token_type: str = Field(default="bearer")
+    expires_in: int = Field(..., description="Access token expiry in seconds")
+
+class MessageResponse(BaseModel):
+    """Generic message response"""
+    success: bool = Field(default=True)
+    message: str = Field(..., description="Response message")
+
+@router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
+async def register(
+    request: RegisterRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Register new user with JWT authentication
+    Creates tenant account with password for platform access
     """
     try:
-        # Get current time boundaries for usage calculation
-        now = datetime.utcnow()
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        minute_start = now.replace(second=0, microsecond=0)
+        # Check if email already exists
+        query = select(Tenant).where(Tenant.email == request.email.lower())
+        result = await db.execute(query)
+        existing_tenant = result.scalar_one_or_none()
         
-        # Get API key details from database
-        api_key_uuid = uuid.UUID(api_key_info.key_id)
-        api_key_stmt = select(APIKey).where(APIKey.id == api_key_uuid)
-        api_key_result = await db.execute(api_key_stmt)
-        db_api_key = api_key_result.scalar_one_or_none()
-        
-        if not db_api_key:
-            logger.error("API key not found for validation", key_id=api_key_info.key_id)
-            raise HTTPException(status_code=404, detail="API key not found")
-        
-        # Query current usage statistics (similar to profile endpoint)
-        # Requests today
-        today_stmt = select(func.count(UsageLog.id)).where(
-            and_(
-                UsageLog.api_key_id == api_key_uuid,
-                UsageLog.created_at >= today_start
+        if existing_tenant:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email already registered"
             )
-        )
-        today_result = await db.execute(today_stmt)
-        requests_today = today_result.scalar() or 0
         
-        # Requests this minute
-        minute_stmt = select(func.count(UsageLog.id)).where(
-            and_(
-                UsageLog.api_key_id == api_key_uuid,
-                UsageLog.created_at >= minute_start
+        # Hash password
+        password_hash = hash_password(request.password)
+        
+        # Create new tenant with authentication
+        tenant = Tenant(
+            name=request.name.strip(),
+            email=request.email.lower(),
+            company_name=request.company_name.strip() if request.company_name else None,
+            password_hash=password_hash,
+            role='user',  # Default role
+            status='active',
+            is_email_verified=False  # Would be verified via email in production
+        )
+        
+        db.add(tenant)
+        await db.commit()
+        await db.refresh(tenant)
+        
+        # Generate JWT token pair
+        tokens = jwt_manager.create_token_pair(tenant)
+        
+        # Update last login
+        tenant.update_last_login()
+        await db.commit()
+        
+        logger.info("User registered successfully", 
+                   tenant_id=str(tenant.id),
+                   email=tenant.email,
+                   role=tenant.role)
+        
+        return AuthResponse(
+            access_token=tokens['access_token'],
+            refresh_token=tokens['refresh_token'],
+            expires_in=tokens['expires_in'],
+            tenant_id=str(tenant.id),
+            email=tenant.email,
+            name=tenant.name,
+            role=tenant.role,
+            company=tenant.company_name
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Registration failed", email=request.email, error=str(e))
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Registration failed. Please try again."
+        )
+
+@router.post("/login", response_model=AuthResponse)
+async def login(
+    request: LoginRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Authenticate user and return JWT tokens
+    """
+    try:
+        # Find tenant by email
+        query = select(Tenant).where(Tenant.email == request.email.lower())
+        result = await db.execute(query)
+        tenant = result.scalar_one_or_none()
+        
+        if not tenant:
+            # Don't reveal that email doesn't exist
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password"
             )
-        )
-        minute_result = await db.execute(minute_stmt)
-        requests_this_minute = minute_result.scalar() or 0
         
-        logger.info("API key validated", key_id=api_key_info.key_id, is_active=db_api_key.is_active)
+        # Check if tenant has password set (is JWT-authenticated)
+        if not tenant.password_hash:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Account not set up for login. Please use API key registration first."
+            )
+        
+        # Verify password
+        if not verify_password(request.password, tenant.password_hash):
+            logger.warning("Failed login attempt", email=request.email)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password"
+            )
+        
+        # Check if account is active
+        if not tenant.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Account is inactive. Please contact support."
+            )
+        
+        # Generate JWT token pair
+        tokens = jwt_manager.create_token_pair(tenant)
+        
+        # Update last login
+        tenant.update_last_login()
+        await db.commit()
+        
+        logger.info("User logged in successfully", 
+                   tenant_id=str(tenant.id),
+                   email=tenant.email,
+                   role=tenant.role)
+        
+        return AuthResponse(
+            access_token=tokens['access_token'],
+            refresh_token=tokens['refresh_token'],
+            expires_in=tokens['expires_in'],
+            tenant_id=str(tenant.id),
+            email=tenant.email,
+            name=tenant.name,
+            role=tenant.role,
+            company=tenant.company_name
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Login failed", email=request.email, error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Login failed. Please try again."
+        )
+
+@router.post("/refresh", response_model=TokenResponse)
+async def refresh_token(
+    request: RefreshRequest
+):
+    """
+    Refresh access token using valid refresh token
+    """
+    try:
+        # Generate new access token
+        new_access_token = jwt_manager.refresh_access_token(request.refresh_token)
+        
+        return TokenResponse(
+            access_token=new_access_token,
+            expires_in=jwt_manager.access_token_expire_minutes * 60
+        )
+        
+    except TokenExpiredError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token has expired. Please login again."
+        )
+    except InvalidTokenError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token"
+        )
+    except Exception as e:
+        logger.error("Token refresh failed", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Token refresh failed"
+        )
+
+@router.post("/logout", response_model=MessageResponse)
+async def logout(
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """
+    Logout user by revoking their access token
+    """
+    try:
+        if credentials:
+            # Revoke the access token
+            jwt_manager.revoke_token(credentials.credentials)
+        
+        logger.info("User logged out")
+        
+        return MessageResponse(
+            message="Logged out successfully"
+        )
+        
+    except Exception as e:
+        logger.error("Logout failed", error=str(e))
+        # Don't fail logout even if token revocation fails
+        return MessageResponse(
+            message="Logged out (with warnings)"
+        )
+
+@router.get("/me", response_model=Dict[str, Any])
+async def get_current_user(
+    tenant: Tenant = Depends(require_authentication)
+):
+    """
+    Get current user information from JWT token
+    """
+    return {
+        "tenant_id": str(tenant.id),
+        "email": tenant.email,
+        "name": tenant.name,
+        "role": tenant.role,
+        "company": tenant.company_name,
+        "status": tenant.status,
+        "is_verified": tenant.is_email_verified,
+        "created_at": tenant.created_at.isoformat(),
+        "last_login": tenant.last_login.isoformat() if tenant.last_login else None,
+        "settings": tenant.settings
+    }
+
+@router.post("/verify-token")
+async def verify_token_endpoint(
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """
+    Verify if JWT token is valid (for debugging/monitoring)
+    """
+    try:
+        if not credentials:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="No token provided"
+            )
+        
+        # Get token info
+        token_info = jwt_manager.get_token_info(credentials.credentials)
+        
+        # Also validate the token
+        payload = jwt_manager.validate_token(credentials.credentials)
         
         return {
             "valid": True,
-            "key_id": api_key_info.key_id,
-            "name": db_api_key.name,
-            "is_active": db_api_key.is_active,
-            "rate_limits": {
-                "per_minute": db_api_key.rate_limit_per_minute,
-                "per_day": db_api_key.rate_limit_per_day,
-                "current_minute_usage": requests_this_minute,
-                "current_day_usage": requests_today
-            },
-            "created_at": db_api_key.created_at.isoformat(),
-            "last_used_at": db_api_key.last_used_at.isoformat() if db_api_key.last_used_at else None,
-            "validated_at": now.isoformat()
+            "token_info": token_info,
+            "payload": {
+                "tenant_id": payload.get('sub'),
+                "email": payload.get('email'),
+                "role": payload.get('role'),
+                "expires_at": payload.get('exp')
+            }
         }
         
+    except TokenExpiredError:
+        return {
+            "valid": False,
+            "error": "Token has expired",
+            "token_info": jwt_manager.get_token_info(credentials.credentials)
+        }
+    except InvalidTokenError as e:
+        return {
+            "valid": False,
+            "error": str(e),
+            "token_info": jwt_manager.get_token_info(credentials.credentials) if credentials else None
+        }
     except Exception as e:
-        logger.error("Failed to validate API key", error=str(e), key_id=api_key_info.key_id)
-        raise HTTPException(status_code=500, detail="Failed to validate API key")
+        logger.error("Token verification failed", error=str(e))
+        return {
+            "valid": False,
+            "error": "Token verification failed"
+        }
